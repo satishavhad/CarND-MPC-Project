@@ -9,6 +9,8 @@
 #include "MPC.h"
 #include "json.hpp"
 
+Eigen::VectorXd predicted_state(double v, double delta_acc, double a, double cte, double epsi);
+
 // for convenience
 using json = nlohmann::json;
 
@@ -98,21 +100,51 @@ int main() {
           * Both are in between [-1, 1].
           *
           */
-          double steer_value;
-          double throttle_value;
+		  //initialize change in steering and acceleration
+		  double delta_acc = j[1]["steering_angle"];
+		  double a = j[1]["throttle"];
+		  Eigen::VectorXd vehicle_ptsx(ptsx.size());
+		  Eigen::VectorXd vehicle_ptsy(ptsy.size());
 
+		  // change the coordinate system
+		  for (unsigned int i = 0; i < ptsx.size(); i++) {
+			  vehicle_ptsx[i] = (ptsx[i] - px) * cos(-psi) - (ptsy[i] - py) * sin(-psi);
+			  vehicle_ptsy[i] = (ptsx[i] - px) * sin(-psi) + (ptsy[i] - py) * cos(-psi);
+		  }
+
+		  // Fit a polynomial to x and y coordinates
+		  Eigen::VectorXd coeffs = polyfit(vehicle_ptsx, vehicle_ptsy, 3);
+
+		  // Calculate the cross track error
+		  double cte = polyeval(coeffs, px) - py;
+		  // Calculate the orientation error
+		  double epsi = psi - atan(coeffs[1]);
+
+		  // calculate the predicted state
+		  Eigen::VectorXd prdt_state = predicted_state(v, delta_acc, a, cte, epsi);
+
+		  // Get the predicted actuations and x, y values
+		  vector<double> pred_variables = mpc.Solve(prdt_state, coeffs);
+		  		  
           json msgJson;
           // NOTE: Remember to divide by deg2rad(25) before you send the steering value back.
           // Otherwise the values will be in between [-deg2rad(25), deg2rad(25] instead of [-1, 1].
-          msgJson["steering_angle"] = steer_value;
-          msgJson["throttle"] = throttle_value;
+		  // assign the predicted steering angle and throttle values
+          msgJson["steering_angle"] = pred_variables[0];
+          msgJson["throttle"] = pred_variables[1];
 
           //Display the MPC predicted trajectory 
-          vector<double> mpc_x_vals;
-          vector<double> mpc_y_vals;
+		  vector<double> mpc_x_vals = { prdt_state[0] };
+		  vector<double> mpc_y_vals = { prdt_state[1] };
 
           //.. add (x,y) points to list here, points are in reference to the vehicle's coordinate system
           // the points in the simulator are connected by a Green line
+
+		  //separate the x and y values from the predicted vector
+		  for (unsigned int i = 2; i < pred_variables.size(); i += 2) {
+			  mpc_x_vals.push_back(pred_variables[i]);
+			  mpc_y_vals.push_back(pred_variables[i + 1]);
+		  }
 
           msgJson["mpc_x"] = mpc_x_vals;
           msgJson["mpc_y"] = mpc_y_vals;
@@ -123,6 +155,12 @@ int main() {
 
           //.. add (x,y) points to list here, points are in reference to the vehicle's coordinate system
           // the points in the simulator are connected by a Yellow line
+
+		  //calcualte y values based on sequntial x values for the polynomial
+		  for (unsigned int i = 1; i<15; i++) {
+			  next_x_vals.push_back(10*i);
+			  next_y_vals.push_back(polyeval(coeffs, 10*i));
+		  }
 
           msgJson["next_x"] = next_x_vals;
           msgJson["next_y"] = next_y_vals;
@@ -182,4 +220,22 @@ int main() {
     return -1;
   }
   h.run();
+}
+
+//calculate the predicted state
+Eigen::VectorXd predicted_state(double v, double delta_acc, double a, double cte, double epsi)
+{
+	float Lf = 2.67;
+	float dt = 0.1;
+
+	double px_predict = 0.0 + v * dt;
+	const double py_predict = 0.0;
+	double psi_predict = 0.0 + v * -delta_acc / Lf * dt;
+	double v_predict = v + a * dt;
+	double cte_predict = cte + v * sin(epsi) * dt;
+	double epsi_predict = epsi + v * -delta_acc / Lf * dt;
+
+	Eigen::VectorXd prdt_state(6);
+	prdt_state << px_predict, py_predict, psi_predict, v_predict, cte_predict, epsi_predict;
+	return prdt_state;
 }
